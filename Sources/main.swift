@@ -11,7 +11,8 @@ enum SessionStatus {
 
 struct SessionInfo {
     var sessionId: String
-    var projectPath: String
+    var projectPath: String      // Display name (last component)
+    var fullProjectPath: String  // Full path for iTerm matching
     var lastPrompt: String
     var status: SessionStatus
     var lastUpdate: Date
@@ -24,7 +25,13 @@ class SessionItemView: NSView {
     weak var delegate: AppDelegate?
 
     override func mouseDown(with event: NSEvent) {
-        delegate?.sessionItemClicked(sessionId: sessionId)
+        if event.clickCount == 2 {
+            // Double click: activate iTerm tab
+            delegate?.activateITermTab(sessionId: sessionId)
+        } else {
+            // Single click: select
+            delegate?.sessionItemClicked(sessionId: sessionId)
+        }
     }
 }
 
@@ -375,6 +382,63 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         updateSessionUI()
     }
 
+    func activateITermTab(sessionId: String) {
+        guard let session = sessions[sessionId],
+              !session.fullProjectPath.isEmpty else { return }
+
+        // Find claude process with matching cwd and get its TTY
+        let findTTYScript = """
+        pgrep -f "claude" | while read pid; do
+            cwd=$(lsof -p $pid 2>/dev/null | grep cwd | awk '{print $NF}')
+            if [ "$cwd" = "\(session.fullProjectPath)" ]; then
+                ps -p $pid -o tty= 2>/dev/null | tr -d ' '
+                break
+            fi
+        done
+        """
+
+        let findTask = Process()
+        findTask.launchPath = "/bin/bash"
+        findTask.arguments = ["-c", findTTYScript]
+        let pipe = Pipe()
+        findTask.standardOutput = pipe
+        findTask.launch()
+        findTask.waitUntilExit()
+
+        let ttyData = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let tty = String(data: ttyData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !tty.isEmpty, tty != "??" else {
+            print("Could not find TTY for: \(session.fullProjectPath)")
+            return
+        }
+
+        let ttyPath = "/dev/\(tty)"
+
+        // Activate iTerm2 tab with matching TTY
+        let activateScript = """
+        tell application "iTerm2"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        if tty of s is "\(ttyPath)" then
+                            select t
+                            select w
+                            activate
+                            return "OK"
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+            return "Not found"
+        end tell
+        """
+
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", activateScript]
+        task.launch()
+    }
+
     @objc func deleteSelectedSession() {
         guard let sessionId = selectedSessionId else { return }
         let filePath = (logDir as NSString).appendingPathComponent("session-\(sessionId).log")
@@ -520,6 +584,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
 
             // Parse log file content
             var projectPath = sessionId
+            var fullProjectPath = ""
             var lastPrompt = ""
             var lastTimestamp = Date()
 
@@ -528,12 +593,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
 
-                // Parse project path (only last directory name)
+                // Parse project path (full path and display name)
                 if let projectRange = trimmed.range(of: "Project: ") {
                     let afterProject = trimmed[projectRange.upperBound...]
                     if let endIndex = afterProject.firstIndex(of: "\n") {
-                        let fullPath = String(afterProject[..<endIndex])
-                        let components = fullPath.components(separatedBy: "/")
+                        fullProjectPath = String(afterProject[..<endIndex])
+                        let components = fullProjectPath.components(separatedBy: "/")
                         if let lastName = components.last, !lastName.isEmpty {
                             projectPath = lastName
                         }
@@ -597,6 +662,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             let session = SessionInfo(
                 sessionId: sessionId,
                 projectPath: projectPath,
+                fullProjectPath: fullProjectPath,
                 lastPrompt: lastPrompt,
                 status: status,
                 lastUpdate: lastTimestamp

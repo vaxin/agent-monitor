@@ -93,9 +93,10 @@ The lifecycle hook writes to:
 ## Usage
 
 - **Left-click** tray icon: Toggle session monitor window
-- **Right-click** tray icon: Show menu (IP info, refresh, quit)
+- **Right-click** tray icon: Show menu (clean sessions, quit)
 - **Click session**: Select/highlight session
-- **Click ✕**: Remove ended session from list
+- **Double-click session**: Activate corresponding iTerm2 tab
+- **Click trash icon**: Remove session from list
 
 ## Roadmap
 

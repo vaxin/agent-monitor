@@ -40,3 +40,10 @@ The app embeds Info.plist via linker flags (see Package.swift) to register as a 
 - Working (green) - Agent is processing
 - Waiting (yellow) - Agent finished, waiting for user input
 - Ended - Session closed (hidden from list)
+
+## iTerm2 Integration
+
+Double-clicking a session activates the corresponding iTerm2 tab:
+1. Finds claude process with matching `cwd`
+2. Gets process TTY via `ps`
+3. Activates iTerm2 tab with matching TTY via AppleScript
