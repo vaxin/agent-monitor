@@ -19,10 +19,11 @@ This lets you maximize concurrency by quickly switching to sessions that need yo
 
 ## Features
 
-- **Menu Bar App**: Unobtrusive system tray presence
+- **Menu Bar App**: Unobtrusive system tray presence with country badge
 - **Floating Status Window**: Always-on-top, translucent session list
 - **Real-time Updates**: FSEvents-based file monitoring for instant status changes
 - **macOS Notifications**: Alerts when agents complete tasks and await input
+- **IP Monitor**: Shows your current public IP and geolocation (via ipinfo.io)
 
 ## Screenshot
 
@@ -93,7 +94,7 @@ The lifecycle hook writes to:
 ## Usage
 
 - **Left-click** tray icon: Toggle session monitor window
-- **Right-click** tray icon: Show menu (clean sessions, quit)
+- **Right-click** tray icon: Show menu (IP info, refresh, clean sessions, quit)
 - **Click session**: Select/highlight session
 - **Double-click session**: Activate corresponding iTerm2 tab
 - **Click trash icon**: Remove session from list
