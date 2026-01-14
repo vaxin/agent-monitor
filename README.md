@@ -22,8 +22,7 @@ This lets you maximize concurrency by quickly switching to sessions that need yo
 - **Menu Bar App**: Unobtrusive system tray presence
 - **Floating Status Window**: Always-on-top, translucent session list
 - **Real-time Updates**: FSEvents-based file monitoring for instant status changes
-- **Audio Notifications**: Sound alerts when agents complete tasks
-- **IP Monitor**: Bonus feature - shows your current public IP and geolocation
+- **macOS Notifications**: Alerts when agents complete tasks and await input
 
 ## Screenshot
 
@@ -49,16 +48,16 @@ Requirements: macOS 13+, Swift 5.9+
 git clone https://github.com/vaxin/agent-monitor.git
 cd agent-monitor
 swift build -c release
-.build/release/IPMonitor
+.build/release/AgentMonitor
 ```
 
 ### Create App Bundle
 
 ```bash
 swift build -c release
-mkdir -p IPMonitor.app/Contents/MacOS
-cp .build/release/IPMonitor IPMonitor.app/Contents/MacOS/
-cp Info.plist IPMonitor.app/Contents/
+mkdir -p AgentMonitor.app/Contents/MacOS
+cp .build/release/AgentMonitor AgentMonitor.app/Contents/MacOS/
+cp Info.plist AgentMonitor.app/Contents/
 ```
 
 ## Configuration

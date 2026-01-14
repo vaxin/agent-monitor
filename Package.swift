@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "IPMonitor",
+    name: "AgentMonitor",
     platforms: [.macOS(.v12)],
     products: [
-        .executable(name: "IPMonitor", targets: ["IPMonitor"])
+        .executable(name: "AgentMonitor", targets: ["AgentMonitor"])
     ],
     targets: [
         .executableTarget(
-            name: "IPMonitor",
+            name: "AgentMonitor",
             path: "Sources",
             linkerSettings: [
                 .unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", "Info.plist"])

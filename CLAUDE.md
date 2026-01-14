@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-IPMonitor is a macOS menu bar application (Swift) that displays your current public IP address and geolocation information. It fetches data from ipinfo.io every 60 seconds and shows a color-coded country badge in the system tray.
+Agent Monitor is a macOS menu bar application (Swift) for monitoring AI agent sessions. It monitors Claude Code lifecycle events via FSEvents and displays active sessions in a floating panel.
 
 ## Build Commands
 
@@ -19,25 +19,24 @@ swift build
 swift run
 
 # Run release binary directly
-.build/arm64-apple-macosx/release/IPMonitor
+.build/arm64-apple-macosx/release/AgentMonitor
 ```
 
 ## Architecture
 
 Single-file AppKit application (`Sources/main.swift`) with:
 
-- **IPInfo struct**: Data model for IP/geo information
+- **SessionInfo struct**: Data model for agent session state
 - **AppDelegate**: Main app controller handling:
-  - Menu bar status item with color-coded country badge
-  - Detail window with request/location info cards
-  - 60-second auto-refresh timer + manual refresh
-  - ipinfo.io API integration via URLSession
+  - Menu bar status item
+  - Floating session list panel (frosted glass style)
+  - FSEvents-based file monitoring for `~/.claude/logs/lifecycle/`
+  - macOS notifications when agents complete
 
 The app embeds Info.plist via linker flags (see Package.swift) to register as a proper macOS application.
 
-## Country Color Coding
+## Session Status
 
-- US → Green
-- CN → Red
-- Other → Orange
-- Error/Unknown → Gray
+- Working (green) - Agent is processing
+- Waiting (yellow) - Agent finished, waiting for user input
+- Ended - Session closed (hidden from list)
