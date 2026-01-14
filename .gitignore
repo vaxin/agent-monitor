@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Build
+.build/
+
+# Vercel
+.vercel/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# App bundle (generated)
+IPMonitor.app/
+
+# DMG (generated)
+*.dmg
