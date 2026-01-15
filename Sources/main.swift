@@ -884,18 +884,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 }
             }
 
-            // Determine status from tail (most recent events)
-            var status: SessionStatus = .working
+            // Determine status from events (forward scan)
+            // State machine:
+            //   SessionStart (startup/resume/clear) → waiting
+            //   SessionStart (compact, after auto PreCompact) → working (Claude continues)
+            //   SessionStart (compact, after manual PreCompact) → waiting
+            //   PreCompact → working (compact operation in progress)
+            //   SessionEnd → ended
+            //   Stop (not SubagentStop) → waiting
+            //   UserPromptSubmit (not task-notification) → working
+            var status: SessionStatus = .waiting
+            var lastCompactTrigger: String? = nil  // Track trigger from PreCompact event
             for block in blocks {
                 let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
 
                 if trimmed.contains("EVENT: SessionEnd") {
                     status = .ended
-                } else if trimmed.contains("EVENT: SessionStart") {
-                    if trimmed.contains("Source: startup") {
-                        status = .working
+                } else if trimmed.contains("EVENT: PreCompact") {
+                    // Compact operation starting → working
+                    status = .working
+                    // Record trigger for upcoming SessionStart (compact)
+                    if trimmed.contains("Trigger: auto") {
+                        lastCompactTrigger = "auto"
+                    } else {
+                        lastCompactTrigger = "manual"
                     }
+                } else if trimmed.contains("EVENT: SessionStart") {
+                    if trimmed.contains("Source: compact") {
+                        // Compact finished: check trigger from PreCompact
+                        if lastCompactTrigger == "auto" {
+                            status = .working  // Auto compact, Claude continues working
+                        } else {
+                            status = .waiting  // Manual compact, waiting for user
+                        }
+                    } else {
+                        // startup/resume/clear → waiting for user input
+                        status = .waiting
+                    }
+                    lastCompactTrigger = nil  // Reset after processing
                 } else if trimmed.contains("EVENT: Stop") && !trimmed.contains("EVENT: SubagentStop") {
                     status = .waiting
                 } else if trimmed.contains("EVENT: UserPromptSubmit") {

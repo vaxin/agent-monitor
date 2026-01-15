@@ -91,6 +91,67 @@ The lifecycle hook writes to:
 - `~/.claude/logs/lifecycle/all-events.jsonl` - All events in JSONL format (used by the GUI)
 - `~/.claude/logs/lifecycle/session-{id}.log` - Per-session human-readable logs
 
+## Session Status State Machine
+
+Agent Monitor determines session status by parsing lifecycle events. Here's how the state machine works:
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                       Session State Machine                   │
+├───────────────────────────────────────────────────────────────┤
+│                                                               │
+│  SessionStart (startup/resume/clear) ───────→  🟡 waiting     │
+│                                                               │
+│  PreCompact (any trigger) ──────────────────→  🟢 working     │
+│       ↓                                                       │
+│  SessionStart (compact)                                       │
+│       ├─ trigger: auto  ────────────────────→  🟢 working     │
+│       └─ trigger: manual ───────────────────→  🟡 waiting     │
+│                                                               │
+│  UserPromptSubmit (non task-notification) ──→  🟢 working     │
+│                                                               │
+│  Stop (non SubagentStop) ───────────────────→  🟡 waiting     │
+│                                                               │
+│  SessionEnd ────────────────────────────────→  ⚫ ended       │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+### Event Details
+
+| Event | Condition | New Status | Description |
+|-------|-----------|------------|-------------|
+| `SessionStart` | source: startup | 🟡 waiting | New session, waiting for user input |
+| `SessionStart` | source: resume | 🟡 waiting | Restored session, waiting for user |
+| `SessionStart` | source: clear | 🟡 waiting | Cleared history, waiting for user |
+| `PreCompact` | any | 🟢 working | Compact operation in progress |
+| `SessionStart` | source: compact, trigger: auto | 🟢 working | Auto compact done, Claude continues |
+| `SessionStart` | source: compact, trigger: manual | 🟡 waiting | Manual compact done, waiting for user |
+| `UserPromptSubmit` | non task-notification | 🟢 working | User submitted input, Claude working |
+| `Stop` | non SubagentStop | 🟡 waiting | Claude finished, waiting for input |
+| `SessionEnd` | - | ⚫ ended | Session closed (hidden from list) |
+
+### Example Flows
+
+**Normal conversation:**
+```
+SessionStart (startup) → waiting
+UserPromptSubmit → working
+Stop → waiting
+UserPromptSubmit → working
+...
+```
+
+**Manual compact:**
+```
+waiting → PreCompact (manual) → working → SessionStart (compact) → waiting
+```
+
+**Auto compact (during long task):**
+```
+working → PreCompact (auto) → working → SessionStart (compact) → working → ...
+```
+
 ## Usage
 
 - **Left-click** tray icon: Toggle session monitor window
