@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>IPMonitor Download</title>
-<meta name="description" content="IPMonitor desktop tool download page">
+<title>Agent Monitor Download</title>
+<meta name="description" content="Agent Monitor - macOS menu bar app for Claude Code sessions">
 <link rel="icon" href="icon.png">
-<meta property="og:title" content="IPMonitor Download">
-<meta property="og:description" content="Open website, download DMG and install">
+<meta property="og:title" content="Agent Monitor Download">
+<meta property="og:description" content="Monitor Claude Code sessions from your menu bar">
 <meta property="og:image" content="icon_512.png">
 <meta name="theme-color" content="#0e7afe">
 <link rel="preload" href="icon_512.png" as="image">
@@ -16,8 +16,8 @@
 <body>
 <header class="site-header">
   <div class="brand">
-    <img src="icon_64.png" alt="IPMonitor icon" class="brand-icon">
-    <div class="brand-text">IPMonitor</div>
+    <img src="icon_64.png" alt="Agent Monitor icon" class="brand-icon">
+    <div class="brand-text">Agent Monitor</div>
   </div>
   <div class="lang-switch">
     <button id="langToggle" class="lang-toggle" aria-label="Toggle language">en</button>
@@ -26,34 +26,69 @@
 <main class="container">
   <section class="hero">
     <img src="icon_512.png" alt="App icon" class="hero-icon">
-    <h1 class="hero-title" id="heroTitle">Download and install now</h1>
-    <p class="hero-subtitle" id="heroSubtitle">Packaged as macOS DMG, ready to use</p>
-    <div class="cta">
-      <a class="btn btn-primary" href="IPMonitor.dmg" id="btnText">Download IPMonitor.dmg</a>
-      <div class="meta" id="metaCompatibility">Apple Silicon compatible</div>
+    <div class="hero-content">
+      <h1 class="hero-title" id="heroTitle">Download and install now</h1>
+      <p class="hero-subtitle" id="heroSubtitle">Packaged as macOS DMG, ready to use</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="AgentMonitor.dmg" id="btnText">Download AgentMonitor.dmg</a>
+        <div class="meta" id="metaCompatibility">Apple Silicon compatible</div>
+      </div>
     </div>
   </section>
   <section class="preview">
     <h2 id="previewTitle">Preview</h2>
-    <a href="effect.png" target="_blank" rel="noopener">
-      <img id="previewImage" src="effect.png" class="preview-img" alt="Screenshot preview">
-    </a>
+    <div class="preview-grid">
+      <div class="preview-item">
+        <h3 id="previewMenuBar">Menu Bar</h3>
+        <a href="effect.png" target="_blank" rel="noopener">
+          <img id="previewImage" src="effect.png" class="preview-img" alt="Screenshot preview">
+        </a>
+      </div>
+      <div class="preview-item">
+        <h3 id="previewSessions">Session Panel</h3>
+        <div class="monitor-demo">
+          <div class="monitor-panel">
+            <div class="session-item session-selected">
+              <span class="session-dot dot-waiting"></span>
+              <span class="session-name">my-app</span>
+              <span class="session-prompt">Add dark mode toggle...</span>
+              <span class="session-delete">🗑</span>
+            </div>
+            <div class="session-item">
+              <span class="session-dot dot-working"></span>
+              <span class="session-name">api-server</span>
+              <span class="session-prompt">Fix the auth middleware...</span>
+            </div>
+            <div class="session-item">
+              <span class="session-dot dot-waiting"></span>
+              <span class="session-name">docs</span>
+              <span class="session-prompt">Update README...</span>
+            </div>
+            <div class="session-item">
+              <span class="session-dot dot-working"></span>
+              <span class="session-name">cli-tool</span>
+              <span class="session-prompt">Add new command...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
   <section class="features">
     <h2 id="featuresTitle">Feature overview</h2>
-    <p id="featuresDesc">Shows the country of the current IP in macOS menu bar. Helps avoid being blocked by AI products due to region mismatch by keeping you aware of your IP location.</p>
+    <p id="featuresDesc">Monitor Claude Code sessions from macOS menu bar. Shows active sessions with status (working/waiting), double-click to jump to iTerm2 tab, notifications when Claude finishes. Also displays IP country info.</p>
     <div class="status-badges">
-      <span class="badge badge-us" id="badgeUS">US: Green</span>
-      <span class="badge badge-other" id="badgeOther">Others: Yellow</span>
-      <span class="badge badge-cn" id="badgeCN">China: Red</span>
+      <span class="badge badge-us" id="badgeUS">Working: Green</span>
+      <span class="badge badge-other" id="badgeOther">Waiting: Yellow</span>
+      <span class="badge badge-cn" id="badgeCN">IP Monitor</span>
     </div>
   </section>
   <section class="security">
     <h2 id="unsignedTitle">Unsigned app notice</h2>
-    <p id="unsignedIntro">Due to macOS security, unsigned apps are blocked by Gatekeeper. You can open IPMonitor in two ways:</p>
+    <p id="unsignedIntro">Due to macOS security, unsigned apps are blocked by Gatekeeper. You can open AgentMonitor in two ways:</p>
     <h3 id="m1Title">Method 1: Open via right‑click (recommended)</h3>
     <ol class="steps">
-      <li id="m1s1">Find IPMonitor.app in Finder</li>
+      <li id="m1s1">Find AgentMonitor.app in Finder</li>
       <li id="m1s2">Right‑click (or Control + click)</li>
       <li id="m1s3">Choose "Open"</li>
       <li id="m1s4">In the dialog, click "Open" to confirm</li>
@@ -62,98 +97,102 @@
     <h3 id="m2Title">Method 2: Allow in System Settings</h3>
     <ol class="steps">
       <li id="m2s1">Open System Settings → Privacy & Security</li>
-      <li id="m2s2">Scroll down to the “IPMonitor” blocked message</li>
-      <li id="m2s3">Click “Open Anyway”</li>
+      <li id="m2s2">Scroll down to the "AgentMonitor" blocked message</li>
+      <li id="m2s3">Click "Open Anyway"</li>
     </ol>
   </section>
   <section class="info">
     <h2 id="infoTitle">Installation steps</h2>
     <ol class="steps">
-      <li id="step1">Click the button above to download IPMonitor.dmg</li>
-      <li id="step2">Double-click the DMG, then drag IPMonitor.app to Applications</li>
-      <li id="step3">Launch IPMonitor from Applications</li>
+      <li id="step1">Click the button above to download AgentMonitor.dmg</li>
+      <li id="step2">Double-click the DMG, then drag AgentMonitor.app to Applications</li>
+      <li id="step3">Launch AgentMonitor from Applications</li>
     </ol>
   </section>
   <section class="verify">
     <h2 id="verifyTitle">Checksum</h2>
     <div class="hash-row">
       <span class="hash-label">SHA256</span>
-      <span class="hash-value" id="sha256">40e0ea4d4d68c5712f5c6bf9426a8095a8e2d6a4fa080d1650973decdbefe623</span>
+      <span class="hash-value" id="sha256">856635fed27e55b5d8c5922d96bc86720e7f842cd6d74f5249cda2c821cd62f4</span>
     </div>
-    <p class="tips" id="tips">To verify, run in Terminal: shasum -a 256 IPMonitor.dmg</p>
+    <p class="tips" id="tips">To verify, run in Terminal: shasum -a 256 AgentMonitor.dmg</p>
   </section>
 </main>
 <footer class="site-footer">
   <div class="footer-inner">
-    <span>IPMonitor</span>
-    <span>© 2025</span>
+    <span>Agent Monitor</span>
+    <span>© <script>document.write(new Date().getFullYear())</script></span>
   </div>
 </footer>
 <script>
   const i18n = {
     en: {
-      docTitle: 'IPMonitor Download',
+      docTitle: 'Agent Monitor Download',
       heroTitle: 'Download and install now',
       heroSubtitle: 'Packaged as macOS DMG, ready to use',
-      btnText: 'Download IPMonitor.dmg',
+      btnText: 'Download AgentMonitor.dmg',
       metaCompatibility: 'Apple Silicon compatible',
       featuresTitle: 'Feature overview',
-      featuresDesc: 'Shows the country of the current IP in macOS menu bar. Helps avoid being blocked by AI products due to region mismatch by keeping you aware of your IP location.',
-      badgeUS: 'US: Green',
-      badgeOther: 'Others: Yellow',
-      badgeCN: 'China: Red',
+      featuresDesc: 'Monitor Claude Code sessions from macOS menu bar. Shows active sessions with status (working/waiting), double-click to jump to iTerm2 tab, notifications when Claude finishes. Also displays IP country info.',
+      badgeUS: 'Working: Green',
+      badgeOther: 'Waiting: Yellow',
+      badgeCN: 'IP Monitor',
       unsignedTitle: 'Unsigned app notice',
-      unsignedIntro: 'Due to macOS security, unsigned apps are blocked by Gatekeeper. You can open IPMonitor in two ways:',
+      unsignedIntro: 'Due to macOS security, unsigned apps are blocked by Gatekeeper. You can open AgentMonitor in two ways:',
       m1Title: 'Method 1: Open via right‑click (recommended)',
-      m1s1: 'Find IPMonitor.app in Finder',
+      m1s1: 'Find AgentMonitor.app in Finder',
       m1s2: 'Right‑click (or Control + click)',
       m1s3: 'Choose "Open"',
       m1s4: 'In the dialog, click "Open" to confirm',
       m1After: 'After this, the app runs normally.',
       m2Title: 'Method 2: Allow in System Settings',
       m2s1: 'Open System Settings → Privacy & Security',
-      m2s2: 'Scroll down to the “IPMonitor” blocked message',
-      m2s3: 'Click “Open Anyway”',
+      m2s2: 'Scroll down to the "AgentMonitor" blocked message',
+      m2s3: 'Click "Open Anyway"',
       infoTitle: 'Installation steps',
-      step1: 'Click the button above to download IPMonitor.dmg',
-      step2: 'Double-click the DMG, then drag IPMonitor.app to Applications',
-      step3: 'Launch IPMonitor from Applications',
+      step1: 'Click the button above to download AgentMonitor.dmg',
+      step2: 'Double-click the DMG, then drag AgentMonitor.app to Applications',
+      step3: 'Launch AgentMonitor from Applications',
       verifyTitle: 'Checksum',
-      tips: 'To verify, run in Terminal: shasum -a 256 IPMonitor.dmg',
+      tips: 'To verify, run in Terminal: shasum -a 256 AgentMonitor.dmg',
       previewTitle: 'Preview',
-      previewAlt: 'Screenshot preview'
+      previewAlt: 'Screenshot preview',
+      previewMenuBar: 'Menu Bar',
+      previewSessions: 'Session Panel'
     },
     zh: {
-      docTitle: 'IPMonitor 下载',
+      docTitle: 'Agent Monitor 下载',
       heroTitle: '立即下载并安装使用',
       heroSubtitle: '已封装为 macOS 安装镜像（dmg），打开即用',
-      btnText: '下载 IPMonitor.dmg',
+      btnText: '下载 AgentMonitor.dmg',
       metaCompatibility: '适配 Apple Silicon',
       featuresTitle: '功能介绍',
-      featuresDesc: 'IP 地址国家展示工具，在 mac 菜单栏常驻展示当前所在国家；US 为绿色，其他国家为黄色，中国为红色。用于避免在使用海外 AI 产品时因忘记当前 IP 地区而导致账号被封禁的问题。',
-      badgeUS: '美国（US）：绿色',
-      badgeOther: '其他国家：黄色',
-      badgeCN: '中国（CN）：红色',
+      featuresDesc: 'Claude Code 会话监控工具。在 macOS 菜单栏显示活跃会话状态（工作中/等待中），双击可跳转到对应 iTerm2 标签页，Claude 完成时发送通知。同时显示 IP 所在国家。',
+      badgeUS: '工作中：绿色',
+      badgeOther: '等待中：黄色',
+      badgeCN: 'IP 监控',
       unsignedTitle: '未签名应用说明',
       unsignedIntro: '由于 macOS 的安全机制，未签名的应用会被 Gatekeeper 拦截。可通过以下两种方式打开：',
       m1Title: '方法 1：右键打开（推荐）',
-      m1s1: '在 Finder 中找到 IPMonitor.app',
+      m1s1: '在 Finder 中找到 AgentMonitor.app',
       m1s2: '右键点击（或 Control + 点击）',
-      m1s3: '选择 “打开”',
-      m1s4: '弹窗中点击 “打开” 确认',
+      m1s3: '选择 "打开"',
+      m1s4: '弹窗中点击 "打开" 确认',
       m1After: '之后即可正常使用。',
       m2Title: '方法 2：系统设置允许',
       m2s1: '打开 系统设置 → 隐私与安全性',
-      m2s2: '滚动到下方，找到关于 “IPMonitor” 被阻止的提示',
-      m2s3: '点击 “仍要打开”',
+      m2s2: '滚动到下方，找到关于 "AgentMonitor" 被阻止的提示',
+      m2s3: '点击 "仍要打开"',
       infoTitle: '安装步骤',
-      step1: '点击上方按钮下载 IPMonitor.dmg',
-      step2: '双击打开 dmg 后，将 IPMonitor.app 拖入「应用程序」',
-      step3: '从「应用程序」启动 IPMonitor',
+      step1: '点击上方按钮下载 AgentMonitor.dmg',
+      step2: '双击打开 dmg 后，将 AgentMonitor.app 拖入「应用程序」',
+      step3: '从「应用程序」启动 AgentMonitor',
       verifyTitle: '校验信息',
-      tips: '如需校验，请在终端运行：shasum -a 256 IPMonitor.dmg',
+      tips: '如需校验，请在终端运行：shasum -a 256 AgentMonitor.dmg',
       previewTitle: '预览效果',
-      previewAlt: '效果截图'
+      previewAlt: '效果截图',
+      previewMenuBar: '菜单栏',
+      previewSessions: '会话面板'
     }
   };
   const elements = {
@@ -184,7 +223,9 @@
     step3: document.getElementById('step3'),
     verifyTitle: document.getElementById('verifyTitle'),
     tips: document.getElementById('tips'),
-    previewTitle: document.getElementById('previewTitle')
+    previewTitle: document.getElementById('previewTitle'),
+    previewMenuBar: document.getElementById('previewMenuBar'),
+    previewSessions: document.getElementById('previewSessions')
   };
   function applyLang(lang) {
     const l = i18n[lang] || i18n.en;

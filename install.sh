@@ -39,6 +39,20 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 PROJECT_DIR=$(echo "$INPUT" | jq -r '.cwd // "unknown"')
 
+# 向上查找 claude 进程 PID（用于精确匹配 iTerm2 tab）
+find_claude_pid() {
+    local pid=$PPID
+    while [ "$pid" != "1" ] && [ -n "$pid" ]; do
+        local cmd=$(ps -p $pid -o comm= 2>/dev/null)
+        if [[ "$cmd" == *"claude"* ]]; then
+            echo $pid
+            return
+        fi
+        pid=$(ps -p $pid -o ppid= 2>/dev/null | tr -d ' ')
+    done
+}
+CLAUDE_PID=$(find_claude_pid)
+
 # 日志目录
 LOG_DIR="$HOME/.claude/logs/lifecycle"
 mkdir -p "$LOG_DIR"
@@ -60,8 +74,9 @@ case "$EVENT_TYPE" in
   SessionStart)
     SOURCE=$(echo "$INPUT" | jq -r '.source // "unknown"')
     LOG_ENTRY="$LOG_ENTRY
-  Source: $SOURCE (startup/resume/clear)"
-    echo "🚀 Session Started: $SESSION_ID" >&2
+  Source: $SOURCE (startup/resume/clear)
+  PID: $CLAUDE_PID"
+    echo "🚀 Session Started: $SESSION_ID (PID: $CLAUDE_PID)" >&2
     ;;
 
   SessionEnd)
@@ -133,11 +148,13 @@ JSONL_ENTRY=$(jq -n \
   --arg ts "$TIMESTAMP" \
   --arg event "$EVENT_TYPE" \
   --arg session "$SESSION_ID" \
+  --arg pid "$CLAUDE_PID" \
   --argjson input "$INPUT" \
   '{
     timestamp: $ts,
     event: $event,
     session_id: $session,
+    claude_pid: $pid,
     data: $input
   }')
 echo "$JSONL_ENTRY" >> "$ALL_EVENTS_LOG"
@@ -151,31 +168,31 @@ chmod +x ~/.claude/hooks/lifecycle-monitor.sh
 
 # Test the script
 echo "🧪 Testing installation..."
-echo '{"session_id":"test-install","cwd":"/tmp/test"}' | ~/.claude/hooks/lifecycle-monitor.sh SessionStart
+echo '{"session_id":"test-install","cwd":"/tmp/test"}' | ~/.claude/hooks/lifecycle-monitor.sh SessionStart 2>&1 | head -1
 
 echo ""
-echo "✅ Installation complete!"
+echo "✅ Hook script installed to: ~/.claude/hooks/lifecycle-monitor.sh"
 echo ""
 echo "📝 Next steps:"
 echo "   1. Run: claude config edit"
-echo "   2. Add the following hooks configuration:"
+echo "   2. Add the following hooks configuration to your settings.json:"
 echo ""
 cat << 'CONFIG'
 {
   "hooks": {
-    "SessionStart": ["~/.claude/hooks/lifecycle-monitor.sh SessionStart"],
-    "SessionEnd": ["~/.claude/hooks/lifecycle-monitor.sh SessionEnd"],
-    "Stop": ["~/.claude/hooks/lifecycle-monitor.sh Stop"],
-    "SubagentStop": ["~/.claude/hooks/lifecycle-monitor.sh SubagentStop"],
-    "UserPromptSubmit": ["~/.claude/hooks/lifecycle-monitor.sh UserPromptSubmit"],
-    "PreToolUse": ["~/.claude/hooks/lifecycle-monitor.sh PreToolUse"],
-    "PostToolUse": ["~/.claude/hooks/lifecycle-monitor.sh PostToolUse"],
-    "PreCompact": ["~/.claude/hooks/lifecycle-monitor.sh PreCompact"],
-    "Notification": ["~/.claude/hooks/lifecycle-monitor.sh Notification"],
-    "PermissionRequest": ["~/.claude/hooks/lifecycle-monitor.sh PermissionRequest"]
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh SessionStart" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh SessionEnd" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh Stop" }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh SubagentStop" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh UserPromptSubmit" }] }],
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh PreToolUse" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh PostToolUse" }] }],
+    "PreCompact": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh PreCompact" }] }],
+    "Notification": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh Notification" }] }],
+    "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.claude/hooks/lifecycle-monitor.sh PermissionRequest" }] }]
   }
 }
 CONFIG
 echo ""
 echo "📁 Logs will be written to: ~/.claude/logs/lifecycle/"
-echo "🖥️  For the GUI app, visit: https://github.com/vaxin/agent-monitor"
+echo "🖥️  For the GUI app, download from: https://github.com/vaxin/agent-monitor/releases"

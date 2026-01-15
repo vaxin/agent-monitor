@@ -25,6 +25,15 @@ swift run
 .build/arm64-apple-macosx/release/AgentMonitor
 ```
 
+## Release DMG
+
+```bash
+# One-command release
+./release.sh
+```
+
+Creates `AgentMonitor.dmg` with app and /Applications shortcut for drag-to-install.
+
 ## Architecture
 
 Single-file AppKit application (`Sources/main.swift`) with:

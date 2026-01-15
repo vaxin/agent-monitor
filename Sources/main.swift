@@ -28,6 +28,7 @@ struct SessionInfo {
     var lastPrompt: String
     var status: SessionStatus
     var lastUpdate: Date
+    var claudePid: Int?          // Claude process PID for precise matching
 }
 
 // MARK: - SessionItemView
@@ -35,6 +36,11 @@ struct SessionInfo {
 class SessionItemView: NSView {
     var sessionId: String = ""
     weak var delegate: AppDelegate?
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
@@ -393,45 +399,73 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         guard let session = sessions[sessionId],
               !session.fullProjectPath.isEmpty else { return }
 
-        // Find claude process with matching cwd and get its TTY
-        let findTTYScript = """
-        pgrep -f "claude" | while read pid; do
-            cwd=$(lsof -p $pid 2>/dev/null | grep cwd | awk '{print $NF}')
-            if [ "$cwd" = "\(session.fullProjectPath)" ]; then
-                ps -p $pid -o tty= 2>/dev/null | tr -d ' '
-                break
-            fi
-        done
-        """
-
-        let findTask = Process()
-        findTask.launchPath = "/bin/bash"
-        findTask.arguments = ["-c", findTTYScript]
-        let pipe = Pipe()
-        findTask.standardOutput = pipe
-        findTask.launch()
-        findTask.waitUntilExit()
-
-        let ttyData = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let tty = String(data: ttyData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !tty.isEmpty, tty != "??" else {
-            print("Could not find TTY for: \(session.fullProjectPath)")
-            return
-        }
-
-        let ttyPath = "/dev/\(tty)"
-
-        // Activate iTerm2 tab with matching TTY
-        let activateScript = """
-        tell application "iTerm2"
+        // Build AppleScript with optional PID matching
+        let pidCondition: String
+        if let pid = session.claudePid {
+            pidCondition = """
+            -- First: try exact PID match (most precise)
+            set targetPid to "\(pid)"
             repeat with w in windows
                 repeat with t in tabs of w
                     repeat with s in sessions of t
-                        if tty of s is "\(ttyPath)" then
+                        set sessionTty to tty of s
+                        set ttyShort to do shell script "basename " & quoted form of sessionTty
+                        set pidCheck to do shell script "ps -t " & ttyShort & " -o pid 2>/dev/null | grep -w " & targetPid & " || true"
+                        if pidCheck is not "" then
                             select t
                             select w
                             activate
                             return "OK"
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+
+            """
+        } else {
+            pidCondition = ""
+        }
+
+        let activateScript = """
+        set targetPath to "\(session.fullProjectPath)"
+
+        tell application "iTerm2"
+            \(pidCondition)
+            -- Second: find session with claude process matching cwd
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        set sessionTty to tty of s
+                        set ttyShort to do shell script "basename " & quoted form of sessionTty
+                        set claudeCheck to do shell script "ps -t " & ttyShort & " -o pid,comm 2>/dev/null | grep claude | awk '{print $1}' | head -1"
+                        if claudeCheck is not "" then
+                            set claudeCwd to do shell script "lsof -p " & claudeCheck & " 2>/dev/null | grep cwd | awk '{print $NF}'"
+                            if claudeCwd is targetPath then
+                                select t
+                                select w
+                                activate
+                                return "OK"
+                            end if
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+
+            -- Third: fallback to shell cwd matching
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        set sessionTty to tty of s
+                        set ttyShort to do shell script "basename " & quoted form of sessionTty
+                        set shellPid to do shell script "ps -t " & ttyShort & " -o pid,comm 2>/dev/null | grep -E 'zsh|bash' | head -1 | awk '{print $1}'"
+                        if shellPid is not "" then
+                            set shellCwd to do shell script "lsof -p " & shellPid & " 2>/dev/null | grep cwd | awk '{print $NF}'"
+                            if shellCwd is targetPath then
+                                select t
+                                select w
+                                activate
+                                return "OK"
+                            end if
                         end if
                     end repeat
                 end repeat
@@ -591,6 +625,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             var fullProjectPath = ""
             var lastPrompt = ""
             var lastTimestamp = Date()
+            var claudePid: Int? = nil
 
             let blocks = content.components(separatedBy: "---")
             for block in blocks {
@@ -609,15 +644,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                     }
                 }
 
+                // Parse PID from SessionStart (updated on each session start/resume)
+                if trimmed.contains("EVENT: SessionStart"),
+                   let pidRange = trimmed.range(of: "PID: ") {
+                    let afterPid = trimmed[pidRange.upperBound...]
+                    if let endIndex = afterPid.firstIndex(where: { !$0.isNumber }) {
+                        claudePid = Int(afterPid[..<endIndex])
+                    } else {
+                        claudePid = Int(afterPid.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
+                }
+
                 // Parse prompt from UserPromptSubmit
                 if trimmed.contains("EVENT: UserPromptSubmit"),
                    let promptRange = trimmed.range(of: "Prompt: ") {
                     let afterPrompt = trimmed[promptRange.upperBound...]
                     // Get first line or up to certain length
+                    var prompt: String
                     if let endIndex = afterPrompt.firstIndex(of: "\n") {
-                        lastPrompt = String(afterPrompt[..<endIndex])
+                        prompt = String(afterPrompt[..<endIndex])
                     } else {
-                        lastPrompt = String(afterPrompt)
+                        prompt = String(afterPrompt)
+                    }
+                    // Skip system notifications (not real user input)
+                    if !prompt.hasPrefix("<task-notification>") {
+                        lastPrompt = prompt
                     }
                 }
 
@@ -633,11 +684,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 }
             }
 
-            // Determine status based on events
+            // Determine status based on events (forward scan)
             // - SessionEnd -> ended
+            // - SessionStart -> working (resets from ended if session restarted)
             // - Stop (not SubagentStop) -> waiting (Claude finished, waiting for user)
             // - UserPromptSubmit -> working (user started new input)
-            // - SessionStart (startup) -> working
             var status: SessionStatus = .working
 
             for block in blocks {
@@ -646,14 +697,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
 
                 if trimmed.contains("EVENT: SessionEnd") {
                     status = .ended
+                } else if trimmed.contains("EVENT: SessionStart") {
+                    // Session (re)started, reset to working
+                    status = .working
                 } else if trimmed.contains("EVENT: Stop") && !trimmed.contains("EVENT: SubagentStop") {
                     // Stop event means Claude finished responding, waiting for user
                     status = .waiting
                 } else if trimmed.contains("EVENT: UserPromptSubmit") {
-                    status = .working
-                } else if trimmed.contains("EVENT: SessionStart") && trimmed.contains("Source: startup") {
-                    // Only fresh startup sets working, ignore compact/resume
-                    status = .working
+                    // Only count as working if it's a real user prompt (not system notification)
+                    if !trimmed.contains("Prompt: <task-notification>") {
+                        status = .working
+                    }
                 }
             }
 
@@ -669,7 +723,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 fullProjectPath: fullProjectPath,
                 lastPrompt: lastPrompt,
                 status: status,
-                lastUpdate: lastTimestamp
+                lastUpdate: lastTimestamp,
+                claudePid: claudePid
             )
 
             newSessions[sessionId] = session
