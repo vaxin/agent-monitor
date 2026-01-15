@@ -29,6 +29,7 @@ struct SessionInfo {
     var status: SessionStatus
     var lastUpdate: Date
     var claudePid: Int?          // Claude process PID for precise matching
+    var tabTitle: String?        // iTerm2 tab title (from session name)
 }
 
 // MARK: - SessionItemView
@@ -79,6 +80,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     var sessionStackView: NSStackView!
     var sessions: [String: SessionInfo] = [:]
     var selectedSessionId: String? = nil
+    var loadingSessionId: String? = nil  // Session being activated (loading state)
     var fsEventStream: FSEventStreamRef?
     let logDir = NSString(string: "~/.claude/logs/lifecycle").expandingTildeInPath
 
@@ -237,13 +239,65 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         ])
     }
 
+    func logPerf(_ msg: String) {
+        let log = "/tmp/agent-monitor-perf.log"
+        let line = "[\(Date())] \(msg)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: log) {
+                if let handle = FileHandle(forWritingAtPath: log) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                FileManager.default.createFile(atPath: log, contents: data)
+            }
+        }
+    }
+
     func toggleSessionWindow() {
         if sessionWindow.isVisible {
             sessionWindow.orderOut(nil)
         } else {
-            reloadSessions()
+            let t0 = CFAbsoluteTimeGetCurrent()
+            // Quick load without iTerm titles, then show window immediately
+            reloadSessions(fetchTabTitles: false)
+            let t1 = CFAbsoluteTimeGetCurrent()
+            logPerf("reloadSessions: \(Int((t1-t0)*1000))ms")
+
             updateSessionUI()
+            let t2 = CFAbsoluteTimeGetCurrent()
+            logPerf("updateSessionUI: \(Int((t2-t1)*1000))ms")
+
             sessionWindow.makeKeyAndOrderFront(nil)
+            let t3 = CFAbsoluteTimeGetCurrent()
+            logPerf("showWindow: \(Int((t3-t2)*1000))ms")
+            logPerf("TOTAL: \(Int((t3-t0)*1000))ms")
+
+            // Async fetch iTerm2 titles and update UI
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
+                let ta = CFAbsoluteTimeGetCurrent()
+                let tabTitles = self.getITermTabTitles()
+                let tb = CFAbsoluteTimeGetCurrent()
+                self.logPerf("getITermTabTitles (async): \(Int((tb-ta)*1000))ms")
+                DispatchQueue.main.async {
+                    self.updateSessionTabTitles(tabTitles)
+                    self.updateSessionUI()
+                }
+            }
+        }
+    }
+
+    func updateSessionTabTitles(_ tabTitles: [String: String]) {
+        for (sessionId, session) in sessions {
+            var updatedSession = session
+            if let pid = session.claudePid, let tty = getTtyForPid(pid) {
+                if let rawTitle = tabTitles[tty] {
+                    updatedSession.tabTitle = cleanTabTitle(rawTitle)
+                    sessions[sessionId] = updatedSession
+                }
+            }
         }
     }
 
@@ -258,7 +312,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 // Waiting sessions first
                 if s1.status == .waiting && s2.status != .waiting { return true }
                 if s1.status != .waiting && s2.status == .waiting { return false }
-                return s1.lastUpdate > s2.lastUpdate
+                // Same status: sort by project name, then sessionId for stable ordering
+                let nameCompare = s1.projectPath.localizedCaseInsensitiveCompare(s2.projectPath)
+                if nameCompare != .orderedSame {
+                    return nameCompare == .orderedAscending
+                }
+                return s1.sessionId < s2.sessionId
             }
 
         if activeSessions.isEmpty {
@@ -336,16 +395,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         }
 
         // Status indicator dot
+        let isLoading = loadingSessionId == session.sessionId
         let statusDot = NSView(frame: NSRect(x: 8, y: 10, width: 8, height: 8))
         statusDot.wantsLayer = true
         statusDot.layer?.cornerRadius = 4
-        let dotColor = session.status == .waiting ? NSColor.systemYellow : NSColor.systemGreen
-        statusDot.layer?.backgroundColor = dotColor.cgColor
-        if session.status == .waiting {
-            statusDot.layer?.shadowColor = NSColor.systemYellow.cgColor
-            statusDot.layer?.shadowRadius = 3
-            statusDot.layer?.shadowOpacity = 0.6
+
+        if isLoading {
+            // Loading state: blue pulsing dot
+            statusDot.layer?.backgroundColor = NSColor.systemBlue.cgColor
+            statusDot.layer?.shadowColor = NSColor.systemBlue.cgColor
+            statusDot.layer?.shadowRadius = 4
+            statusDot.layer?.shadowOpacity = 0.8
             statusDot.layer?.shadowOffset = .zero
+
+            // Pulse animation
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1.0
+            pulse.toValue = 0.3
+            pulse.duration = 0.5
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            statusDot.layer?.add(pulse, forKey: "pulse")
+        } else {
+            let dotColor = session.status == .waiting ? NSColor.systemYellow : NSColor.systemGreen
+            statusDot.layer?.backgroundColor = dotColor.cgColor
+            if session.status == .waiting {
+                statusDot.layer?.shadowColor = NSColor.systemYellow.cgColor
+                statusDot.layer?.shadowRadius = 3
+                statusDot.layer?.shadowOpacity = 0.6
+                statusDot.layer?.shadowOffset = .zero
+            }
         }
         container.addSubview(statusDot)
 
@@ -357,14 +436,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         nameLabel.frame = NSRect(x: 22, y: 6, width: 70, height: 16)
         container.addSubview(nameLabel)
 
-        // Prompt description
-        let prompt = session.lastPrompt.isEmpty ? "..." : session.lastPrompt
-        let descLabel = NSTextField(labelWithString: prompt)
+        // Description: prefer tab title, fallback to prompt
+        let description = session.tabTitle ?? (session.lastPrompt.isEmpty ? "..." : session.lastPrompt)
+        let descLabel = NSTextField(labelWithString: description)
         descLabel.font = NSFont.systemFont(ofSize: 10)
         descLabel.textColor = .secondaryLabelColor
         descLabel.lineBreakMode = .byTruncatingTail
         descLabel.frame = NSRect(x: 94, y: 6, width: isSelected ? 150 : 175, height: 16)
         container.addSubview(descLabel)
+
+        // Tooltip: show last prompt on hover (useful when tab title is shown)
+        if !session.lastPrompt.isEmpty {
+            container.toolTip = session.lastPrompt
+        }
 
         // Delete button (only when selected)
         if isSelected {
@@ -398,6 +482,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     func activateITermTab(sessionId: String) {
         guard let session = sessions[sessionId],
               !session.fullProjectPath.isEmpty else { return }
+
+        // Set loading state and refresh UI
+        loadingSessionId = sessionId
+        updateSessionUI()
 
         // Build AppleScript with optional PID matching
         let pidCondition: String
@@ -474,10 +562,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         end tell
         """
 
-        let task = Process()
-        task.launchPath = "/usr/bin/osascript"
-        task.arguments = ["-e", activateScript]
-        task.launch()
+        // Run AppleScript asynchronously
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let task = Process()
+            task.launchPath = "/usr/bin/osascript"
+            task.arguments = ["-e", activateScript]
+            task.launch()
+            task.waitUntilExit()
+
+            // Clear loading state on main thread
+            DispatchQueue.main.async {
+                self?.loadingSessionId = nil
+                self?.updateSessionUI()
+            }
+        }
     }
 
     @objc func deleteSelectedSession() {
@@ -579,7 +677,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
 
     func onFileSystemEvent() {
         let oldSessions = sessions
-        reloadSessions()
+        // Skip iTerm titles on FSEvents - preserve existing titles
+        reloadSessions(fetchTabTitles: false)
+
+        // Preserve existing tab titles from old sessions
+        for (sessionId, oldSession) in oldSessions {
+            if var newSession = sessions[sessionId], newSession.tabTitle == nil {
+                newSession.tabTitle = oldSession.tabTitle
+                sessions[sessionId] = newSession
+            }
+        }
 
         // Update UI if visible and something changed
         if sessionWindow.isVisible {
@@ -593,7 +700,97 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         }
     }
 
-    func reloadSessions() {
+    // MARK: - iTerm2 Tab Title Integration
+
+    /// Get TTY for a given PID
+    func getTtyForPid(_ pid: Int) -> String? {
+        let task = Process()
+        task.launchPath = "/bin/ps"
+        task.arguments = ["-p", String(pid), "-o", "tty="]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let tty = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let tty = tty, !tty.isEmpty, tty != "??" {
+                return tty
+            }
+        } catch {}
+        return nil
+    }
+
+    /// Get all iTerm2 session titles mapped by TTY (e.g., "ttys012" -> "✳ Task Name")
+    func getITermTabTitles() -> [String: String] {
+        let script = """
+        tell application "iTerm2"
+            set output to ""
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        set sessionName to name of s
+                        set sessionTty to tty of s
+                        set ttyShort to do shell script "basename " & quoted form of sessionTty
+                        set output to output & ttyShort & "\\t" & sessionName & "\\n"
+                    end repeat
+                end repeat
+            end repeat
+            return output
+        end tell
+        """
+
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", script]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return [:] }
+
+            var result: [String: String] = [:]
+            for line in output.components(separatedBy: "\n") {
+                let parts = line.components(separatedBy: "\t")
+                if parts.count >= 2 {
+                    let tty = parts[0].trimmingCharacters(in: .whitespaces)
+                    let title = parts[1].trimmingCharacters(in: .whitespaces)
+                    if !tty.isEmpty && !title.isEmpty {
+                        result[tty] = title
+                    }
+                }
+            }
+            return result
+        } catch {
+            return [:]
+        }
+    }
+
+    /// Extract clean task name from iTerm2 tab title
+    /// e.g., "✳ Database Usage Count (node)" -> "Database Usage Count"
+    func cleanTabTitle(_ title: String) -> String {
+        var clean = title
+        // Remove leading status indicators (✳, ⠂, etc.)
+        let prefixes = ["✳ ", "⠂ ", "⠈ ", "⠐ ", "⠠ ", "⡀ ", "⢀ ", "⠄ "]
+        for prefix in prefixes {
+            if clean.hasPrefix(prefix) {
+                clean = String(clean.dropFirst(prefix.count))
+                break
+            }
+        }
+        // Remove trailing process indicator like " (node)", " (-zsh)"
+        if let parenRange = clean.range(of: " (", options: .backwards) {
+            clean = String(clean[..<parenRange.lowerBound])
+        }
+        return clean.trimmingCharacters(in: .whitespaces)
+    }
+
+    func reloadSessions(fetchTabTitles: Bool = true) {
+        let t0 = CFAbsoluteTimeGetCurrent()
         var newSessions: [String: SessionInfo] = [:]
         var previousStates: [String: SessionStatus] = [:]
 
@@ -602,10 +799,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             previousStates[id] = session.status
         }
 
+        // Get iTerm2 tab titles (TTY -> title mapping) - skip if not needed for faster loading
+        let tabTitles: [String: String] = fetchTabTitles ? getITermTabTitles() : [:]
+        let t1 = CFAbsoluteTimeGetCurrent()
+        logPerf("  tabTitles: \(Int((t1-t0)*1000))ms (fetch=\(fetchTabTitles))")
+
         // Scan session-*.log files in directory
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: logDir) else {
             return
         }
+        logPerf("  listDir: \(Int((CFAbsoluteTimeGetCurrent()-t1)*1000))ms, files=\(files.count)")
 
         for file in files {
             guard file.hasPrefix("session-") && file.hasSuffix(".log") else { continue }
@@ -614,7 +817,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             guard let data = FileManager.default.contents(atPath: filePath) else {
                 continue
             }
-            // Use lossy conversion to handle corrupted UTF-8 characters
             let content = String(decoding: data, as: UTF8.self)
 
             // Extract session ID from filename: session-{id}.log
@@ -659,20 +861,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 if trimmed.contains("EVENT: UserPromptSubmit"),
                    let promptRange = trimmed.range(of: "Prompt: ") {
                     let afterPrompt = trimmed[promptRange.upperBound...]
-                    // Get first line or up to certain length
                     var prompt: String
                     if let endIndex = afterPrompt.firstIndex(of: "\n") {
                         prompt = String(afterPrompt[..<endIndex])
                     } else {
                         prompt = String(afterPrompt)
                     }
-                    // Skip system notifications (not real user input)
                     if !prompt.hasPrefix("<task-notification>") {
                         lastPrompt = prompt
                     }
                 }
 
-                // Parse timestamp: [2026-01-14 10:17:06]
+                // Parse timestamp
                 if let startBracket = trimmed.firstIndex(of: "["),
                    let endBracket = trimmed.firstIndex(of: "]") {
                     let timestampStr = String(trimmed[trimmed.index(after: startBracket)..<endBracket])
@@ -684,13 +884,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 }
             }
 
-            // Determine status based on events (forward scan)
-            // - SessionEnd -> ended
-            // - SessionStart -> working (resets from ended if session restarted)
-            // - Stop (not SubagentStop) -> waiting (Claude finished, waiting for user)
-            // - UserPromptSubmit -> working (user started new input)
+            // Determine status from tail (most recent events)
             var status: SessionStatus = .working
-
             for block in blocks {
                 let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
@@ -698,10 +893,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 if trimmed.contains("EVENT: SessionEnd") {
                     status = .ended
                 } else if trimmed.contains("EVENT: SessionStart") {
-                    // Session (re)started, reset to working
-                    status = .working
+                    if trimmed.contains("Source: startup") {
+                        status = .working
+                    }
                 } else if trimmed.contains("EVENT: Stop") && !trimmed.contains("EVENT: SubagentStop") {
-                    // Stop event means Claude finished responding, waiting for user
                     status = .waiting
                 } else if trimmed.contains("EVENT: UserPromptSubmit") {
                     // Only count as working if it's a real user prompt (not system notification)
@@ -717,6 +912,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             // Skip sessions without any prompt (empty sessions that were reset/resumed away)
             guard !lastPrompt.isEmpty else { continue }
 
+            // Try to get iTerm2 tab title for this session (only if we have titles)
+            var tabTitle: String? = nil
+            if !tabTitles.isEmpty, let pid = claudePid, let tty = getTtyForPid(pid) {
+                if let rawTitle = tabTitles[tty] {
+                    tabTitle = cleanTabTitle(rawTitle)
+                }
+            }
+
             let session = SessionInfo(
                 sessionId: sessionId,
                 projectPath: projectPath,
@@ -724,7 +927,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 lastPrompt: lastPrompt,
                 status: status,
                 lastUpdate: lastTimestamp,
-                claudePid: claudePid
+                claudePid: claudePid,
+                tabTitle: tabTitle
             )
 
             newSessions[sessionId] = session
