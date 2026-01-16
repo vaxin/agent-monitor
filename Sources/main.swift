@@ -16,9 +16,10 @@ struct IPInfo {
 }
 
 enum SessionStatus {
-    case working    // Claude is processing
-    case waiting    // Waiting for user input (highlight)
-    case ended      // Session ended (don't show)
+    case working       // Claude is processing
+    case freshWaiting  // Just entered waiting (< 1 min) - needs attention!
+    case waiting       // Waiting for user input (> 1 min)
+    case ended         // Session ended (don't show)
 }
 
 struct SessionInfo {
@@ -30,6 +31,7 @@ struct SessionInfo {
     var lastUpdate: Date
     var claudePid: Int?          // Claude process PID for precise matching
     var tabTitle: String?        // iTerm2 tab title (from session name)
+    var waitingStartTime: Date?  // When session entered waiting state
 }
 
 // MARK: - SessionItemView
@@ -83,6 +85,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     var loadingSessionId: String? = nil  // Session being activated (loading state)
     var fsEventStream: FSEventStreamRef?
     let logDir = NSString(string: "~/.claude/logs/lifecycle").expandingTildeInPath
+    var tabTitleRefreshTimer: Timer? = nil
+    var hasLoadedTabTitles: Bool = false  // Track if we've loaded tab titles at least once
+    var statsWindow: NSWindow? = nil  // Keep reference to stats window to prevent crash on close
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("Agent Monitor launching...")
@@ -104,6 +109,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         statusMenu = NSMenu()
         statusMenu.addItem(NSMenuItem(title: "Show IP Info", action: #selector(showWindow), keyEquivalent: "s"))
         statusMenu.addItem(NSMenuItem(title: "Refresh IP", action: #selector(fetchIP), keyEquivalent: "r"))
+        statusMenu.addItem(.separator())
+        statusMenu.addItem(NSMenuItem(title: "AI Productivity Stats", action: #selector(showProductivityStats), keyEquivalent: "p"))
         statusMenu.addItem(.separator())
         statusMenu.addItem(NSMenuItem(title: "Clean Ended Sessions", action: #selector(cleanEndedSessions), keyEquivalent: ""))
         statusMenu.addItem(NSMenuItem(title: "Delete All Logs", action: #selector(deleteAllLogs), keyEquivalent: ""))
@@ -146,6 +153,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         fetchIPInternal(showLoading: false)
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.fetchIPInternal(showLoading: false)
+        }
+
+        // Check and update freshWaiting sessions every 5 seconds
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.checkAndUpdateWaitingStates()
+        }
+    }
+
+    func checkAndUpdateWaitingStates() {
+        var needsUpdate = false
+        let now = Date()
+
+        for (sessionId, session) in sessions {
+            if session.status == .freshWaiting,
+               let startTime = session.waitingStartTime,
+               now.timeIntervalSince(startTime) > 60 {  // 1 minute
+                var updated = session
+                updated.status = .waiting
+                sessions[sessionId] = updated
+                needsUpdate = true
+            }
+        }
+
+        if needsUpdate && sessionWindow.isVisible {
+            updateSessionUI()
+        }
+    }
+
+    func statusPriority(_ status: SessionStatus) -> Int {
+        switch status {
+        case .freshWaiting: return 0  // Highest priority
+        case .waiting: return 1
+        case .working: return 2
+        case .ended: return 3
         }
     }
 
@@ -258,8 +299,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     func toggleSessionWindow() {
         if sessionWindow.isVisible {
             sessionWindow.orderOut(nil)
+            // Stop tab title refresh timer when window is hidden
+            tabTitleRefreshTimer?.invalidate()
+            tabTitleRefreshTimer = nil
         } else {
             let t0 = CFAbsoluteTimeGetCurrent()
+            // Reset tab title loading state
+            hasLoadedTabTitles = false
+
             // Quick load without iTerm titles, then show window immediately
             reloadSessions(fetchTabTitles: false)
             let t1 = CFAbsoluteTimeGetCurrent()
@@ -274,17 +321,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             logPerf("showWindow: \(Int((t3-t2)*1000))ms")
             logPerf("TOTAL: \(Int((t3-t0)*1000))ms")
 
-            // Async fetch iTerm2 titles and update UI
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                let ta = CFAbsoluteTimeGetCurrent()
-                let tabTitles = self.getITermTabTitles()
-                let tb = CFAbsoluteTimeGetCurrent()
-                self.logPerf("getITermTabTitles (async): \(Int((tb-ta)*1000))ms")
-                DispatchQueue.main.async {
-                    self.updateSessionTabTitles(tabTitles)
-                    self.updateSessionUI()
-                }
+            // Fetch iTerm2 titles immediately
+            refreshTabTitles()
+
+            // Start periodic tab title refresh (every 10 seconds)
+            tabTitleRefreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+                self?.refreshTabTitles()
+            }
+        }
+    }
+
+    func refreshTabTitles() {
+        // Async fetch iTerm2 titles and update UI
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let ta = CFAbsoluteTimeGetCurrent()
+            let tabTitles = self.getITermTabTitles()
+            let tb = CFAbsoluteTimeGetCurrent()
+            self.logPerf("getITermTabTitles (async): \(Int((tb-ta)*1000))ms")
+            DispatchQueue.main.async {
+                self.hasLoadedTabTitles = true
+                self.updateSessionTabTitles(tabTitles)
+                self.updateSessionUI()
             }
         }
     }
@@ -309,9 +367,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         let activeSessions = sessions.values
             .filter { $0.status != .ended }
             .sorted { s1, s2 in
-                // Waiting sessions first
-                if s1.status == .waiting && s2.status != .waiting { return true }
-                if s1.status != .waiting && s2.status == .waiting { return false }
+                // Priority: freshWaiting > waiting > working
+                let priority1 = self.statusPriority(s1.status)
+                let priority2 = self.statusPriority(s2.status)
+                if priority1 != priority2 {
+                    return priority1 < priority2
+                }
                 // Same status: sort by project name, then sessionId for stable ordering
                 let nameCompare = s1.projectPath.localizedCaseInsensitiveCompare(s2.projectPath)
                 if nameCompare != .orderedSame {
@@ -377,6 +438,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         container.sessionId = session.sessionId
         container.delegate = self
         container.wantsLayer = true
+        container.layerContentsRedrawPolicy = .onSetNeedsDisplay  // Critical for animations
         container.layer?.cornerRadius = 6
 
         // Background color based on status and selection
@@ -384,7 +446,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             container.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
             container.layer?.borderWidth = 1
             container.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.3).cgColor
+        } else if session.status == .freshWaiting {
+            // Fresh waiting: vibrant orange with stronger emphasis
+            container.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.2).cgColor
+            container.layer?.borderWidth = 1.5
+            container.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.5).cgColor
         } else if session.status == .waiting {
+            // Regular waiting: softer yellow
             container.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.12).cgColor
             container.layer?.borderWidth = 1
             container.layer?.borderColor = NSColor.systemYellow.withAlphaComponent(0.25).cgColor
@@ -398,7 +466,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         let isLoading = loadingSessionId == session.sessionId
         let statusDot = NSView(frame: NSRect(x: 8, y: 10, width: 8, height: 8))
         statusDot.wantsLayer = true
+        statusDot.layerContentsRedrawPolicy = .onSetNeedsDisplay  // Critical for animations
         statusDot.layer?.cornerRadius = 4
+        statusDot.layer?.masksToBounds = false  // Allow shadow to show
 
         if isLoading {
             // Loading state: blue pulsing dot
@@ -415,16 +485,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             pulse.duration = 0.5
             pulse.autoreverses = true
             pulse.repeatCount = .infinity
+            pulse.isRemovedOnCompletion = false
             statusDot.layer?.add(pulse, forKey: "pulse")
+        } else if session.status == .freshWaiting {
+            // Fresh waiting: bright orange with pulsing animation
+            statusDot.layer?.backgroundColor = NSColor.systemOrange.cgColor
+            statusDot.layer?.shadowColor = NSColor.systemOrange.cgColor
+            statusDot.layer?.shadowRadius = 4
+            statusDot.layer?.shadowOpacity = 0.8
+            statusDot.layer?.shadowOffset = .zero
+
+            // Pulse animation - animate shadow opacity for more visible effect
+            let shadowPulse = CABasicAnimation(keyPath: "shadowOpacity")
+            shadowPulse.fromValue = 0.8
+            shadowPulse.toValue = 0.2
+            shadowPulse.duration = 0.8
+            shadowPulse.autoreverses = true
+            shadowPulse.repeatCount = .infinity
+            shadowPulse.isRemovedOnCompletion = false
+            statusDot.layer?.add(shadowPulse, forKey: "shadowPulse")
+
+            // Also pulse the opacity
+            let opacityPulse = CABasicAnimation(keyPath: "opacity")
+            opacityPulse.fromValue = 1.0
+            opacityPulse.toValue = 0.5
+            opacityPulse.duration = 0.8
+            opacityPulse.autoreverses = true
+            opacityPulse.repeatCount = .infinity
+            opacityPulse.isRemovedOnCompletion = false
+            statusDot.layer?.add(opacityPulse, forKey: "opacityPulse")
+        } else if session.status == .waiting {
+            // Regular waiting: yellow with soft glow
+            statusDot.layer?.backgroundColor = NSColor.systemYellow.cgColor
+            statusDot.layer?.shadowColor = NSColor.systemYellow.cgColor
+            statusDot.layer?.shadowRadius = 3
+            statusDot.layer?.shadowOpacity = 0.6
+            statusDot.layer?.shadowOffset = .zero
         } else {
-            let dotColor = session.status == .waiting ? NSColor.systemYellow : NSColor.systemGreen
-            statusDot.layer?.backgroundColor = dotColor.cgColor
-            if session.status == .waiting {
-                statusDot.layer?.shadowColor = NSColor.systemYellow.cgColor
-                statusDot.layer?.shadowRadius = 3
-                statusDot.layer?.shadowOpacity = 0.6
-                statusDot.layer?.shadowOffset = .zero
-            }
+            // Working: green
+            statusDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
         }
         container.addSubview(statusDot)
 
@@ -436,11 +535,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         nameLabel.frame = NSRect(x: 22, y: 6, width: 70, height: 16)
         container.addSubview(nameLabel)
 
-        // Description: prefer tab title, fallback to prompt
-        let description = session.tabTitle ?? (session.lastPrompt.isEmpty ? "..." : session.lastPrompt)
+        // Description: prefer tab title, fallback to prompt (only after loading tab titles)
+        let description: String
+        if let tabTitle = session.tabTitle {
+            // Has tab title: show it
+            description = tabTitle
+        } else if hasLoadedTabTitles {
+            // Tab titles loaded but this session doesn't have one: show prompt
+            description = session.lastPrompt.isEmpty ? "..." : session.lastPrompt
+        } else {
+            // Still loading tab titles: show loading indicator
+            description = "..."
+        }
+
         let descLabel = NSTextField(labelWithString: description)
         descLabel.font = NSFont.systemFont(ofSize: 10)
-        descLabel.textColor = .secondaryLabelColor
+        descLabel.textColor = hasLoadedTabTitles ? .secondaryLabelColor : .tertiaryLabelColor
         descLabel.lineBreakMode = .byTruncatingTail
         descLabel.frame = NSRect(x: 94, y: 6, width: isSelected ? 150 : 175, height: 16)
         container.addSubview(descLabel)
@@ -874,7 +984,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
 
                 // Parse timestamp
                 if let startBracket = trimmed.firstIndex(of: "["),
-                   let endBracket = trimmed.firstIndex(of: "]") {
+                   let endBracket = trimmed.firstIndex(of: "]"),
+                   startBracket < endBracket {
                     let timestampStr = String(trimmed[trimmed.index(after: startBracket)..<endBracket])
                     let df = DateFormatter()
                     df.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -886,14 +997,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
 
             // Determine status from events (forward scan)
             // State machine:
-            //   SessionStart (startup/resume/clear) → waiting
+            //   SessionStart (startup/resume/clear) → freshWaiting
             //   SessionStart (compact, after auto PreCompact) → working (Claude continues)
-            //   SessionStart (compact, after manual PreCompact) → waiting
+            //   SessionStart (compact, after manual PreCompact) → freshWaiting
             //   PreCompact → working (compact operation in progress)
             //   SessionEnd → ended
-            //   Stop (not SubagentStop) → waiting
+            //   Stop (not SubagentStop) → freshWaiting
             //   UserPromptSubmit (not task-notification) → working
-            var status: SessionStatus = .waiting
+            var status: SessionStatus = .freshWaiting
             var lastCompactTrigger: String? = nil  // Track trigger from PreCompact event
             for block in blocks {
                 let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -916,15 +1027,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                         if lastCompactTrigger == "auto" {
                             status = .working  // Auto compact, Claude continues working
                         } else {
-                            status = .waiting  // Manual compact, waiting for user
+                            status = .freshWaiting  // Manual compact, waiting for user
                         }
                     } else {
                         // startup/resume/clear → waiting for user input
-                        status = .waiting
+                        status = .freshWaiting
                     }
                     lastCompactTrigger = nil  // Reset after processing
                 } else if trimmed.contains("EVENT: Stop") && !trimmed.contains("EVENT: SubagentStop") {
-                    status = .waiting
+                    status = .freshWaiting
                 } else if trimmed.contains("EVENT: UserPromptSubmit") {
                     // Only count as working if it's a real user prompt (not system notification)
                     if !trimmed.contains("Prompt: <task-notification>") {
@@ -947,6 +1058,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 }
             }
 
+            // Determine waitingStartTime and adjust status based on elapsed time
+            let waitingStartTime: Date?
+            if status == .freshWaiting || status == .waiting {
+                // Check if transitioning to waiting state from non-waiting state
+                if let prevStatus = previousStates[sessionId],
+                   prevStatus != .freshWaiting && prevStatus != .waiting {
+                    // New waiting state: record current time
+                    waitingStartTime = Date()
+                } else if let oldSession = sessions[sessionId] {
+                    // Already in waiting state: preserve existing timestamp
+                    waitingStartTime = oldSession.waitingStartTime
+                } else {
+                    // First time seeing this session: record current time
+                    waitingStartTime = Date()
+                }
+
+                // Adjust status based on how long we've been waiting
+                if let startTime = waitingStartTime {
+                    let elapsed = Date().timeIntervalSince(startTime)
+                    if elapsed > 60 {
+                        status = .waiting
+                    } else {
+                        status = .freshWaiting
+                    }
+                }
+            } else {
+                // Not waiting: clear timestamp
+                waitingStartTime = nil
+            }
+
             let session = SessionInfo(
                 sessionId: sessionId,
                 projectPath: projectPath,
@@ -955,14 +1096,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 status: status,
                 lastUpdate: lastTimestamp,
                 claudePid: claudePid,
-                tabTitle: tabTitle
+                tabTitle: tabTitle,
+                waitingStartTime: waitingStartTime
             )
 
             newSessions[sessionId] = session
 
-            // Send notification if newly waiting
-            if status == .waiting && previousStates[sessionId] != .waiting {
-                sendStopNotification(session: session)
+            // Send notification if newly waiting (freshWaiting or waiting, but not from waiting states)
+            if (status == .freshWaiting || status == .waiting) {
+                if let prevStatus = previousStates[sessionId],
+                   prevStatus != .freshWaiting && prevStatus != .waiting {
+                    sendStopNotification(session: session)
+                }
             }
         }
 
@@ -1199,6 +1344,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
+        // Stop tab title refresh timer if session window is being closed
+        if sender == sessionWindow {
+            tabTitleRefreshTimer?.invalidate()
+            tabTitleRefreshTimer = nil
+        }
         return false
     }
 
@@ -1208,8 +1358,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     }
 
     @objc func showWindow() {
-        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     @objc func fetchIP() {
@@ -1261,6 +1412,388 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             }
         }.resume()
     }
+
+    // MARK: - AI Productivity Stats
+
+    @objc func showProductivityStats() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let report = self.runProductivityScript()
+            DispatchQueue.main.async {
+                self.displayProductivityReport(report)
+            }
+        }
+    }
+
+    func runProductivityScript() -> String {
+        let scriptPath = NSString(string: "~/.claude/scripts/productivity_stats.py").expandingTildeInPath
+
+        let task = Process()
+        task.launchPath = "/usr/bin/python3"
+        task.arguments = [scriptPath]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let report = String(data: data, encoding: .utf8) {
+                return report
+            }
+        } catch {
+            return "Error running stats script: \(error.localizedDescription)"
+        }
+
+        return "No data available"
+    }
+
+    func displayProductivityReport(_ report: String) {
+        // Reuse existing window or create new one
+        if statsWindow == nil {
+            statsWindow = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+                styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                backing: .buffered,
+                defer: false
+            )
+            statsWindow!.title = "AI Productivity Stats - Today"
+            statsWindow!.center()
+            statsWindow!.delegate = self
+        }
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+        scrollView.hasVerticalScroller = true
+        scrollView.autoresizingMask = [.width, .height]
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 580, height: 480))
+        textView.isEditable = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.autoresizingMask = [.width]
+        textView.string = report
+
+        scrollView.documentView = textView
+        statsWindow!.contentView = scrollView
+
+        NSApp.activate(ignoringOtherApps: true)
+        statsWindow!.makeKeyAndOrderFront(nil)
+        statsWindow!.orderFrontRegardless()
+    }
+
+    func calculateProductivityStats() -> ProductivityStats {
+        let logFile = NSString(string: "~/.claude/logs/lifecycle/all-events.jsonl").expandingTildeInPath
+
+        let today = Calendar.current.startOfDay(for: Date())
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+
+        var sessions: [String: SessionTimeline] = [:]
+
+        // Stream file line-by-line to avoid memory issues
+        guard let fileHandle = FileHandle(forReadingAtPath: logFile) else {
+            return ProductivityStats(sessions: [:], concurrencyTimeline: [])
+        }
+        defer { fileHandle.closeFile() }
+
+        // Robust line-by-line parsing (handles malformed JSON)
+        var currentTimestamp: Date? = nil
+        var currentEvent: String? = nil
+        var currentSessionId: String? = nil
+        var lineBuffer = ""
+
+        while true {
+            let data = fileHandle.readData(ofLength: 8192)  // Read 8KB chunks
+            if data.isEmpty { break }
+
+            guard let chunk = String(data: data, encoding: .utf8) else { continue }
+            lineBuffer += chunk
+
+            let lines = lineBuffer.components(separatedBy: "\n")
+            lineBuffer = lines.last ?? ""  // Keep incomplete line for next iteration
+
+            for line in lines.dropLast() {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                // Extract timestamp using regex
+                if trimmed.contains("\"timestamp\":") {
+                    let pattern = "\"timestamp\":\\s*\"([0-9]{4}-[0-9]{2}-[0-9]{2}\\s[0-9]{2}:[0-9]{2}:[0-9]{2})\""
+                    if let regex = try? NSRegularExpression(pattern: pattern),
+                       let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+                       let timestampRange = Range(match.range(at: 1), in: trimmed) {
+                        let timestampStr = String(trimmed[timestampRange])
+                        if let timestamp = dateFormatter.date(from: timestampStr), timestamp >= today {
+                            currentTimestamp = timestamp
+                        } else {
+                            currentTimestamp = nil
+                        }
+                    }
+                }
+
+                // Extract event type
+                if trimmed.contains("\"event\":") && currentTimestamp != nil {
+                    let pattern = "\"event\":\\s*\"([A-Za-z]+)\""
+                    if let regex = try? NSRegularExpression(pattern: pattern),
+                       let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+                       let eventRange = Range(match.range(at: 1), in: trimmed) {
+                        currentEvent = String(trimmed[eventRange])
+                    }
+                }
+
+                // Extract session ID
+                if trimmed.contains("\"session_id\":") && currentTimestamp != nil {
+                    let pattern = "\"session_id\":\\s*\"([a-f0-9-]+)\""
+                    if let regex = try? NSRegularExpression(pattern: pattern),
+                       let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+                       let sessionRange = Range(match.range(at: 1), in: trimmed) {
+                        currentSessionId = String(trimmed[sessionRange])
+                    }
+                }
+
+                // Complete event when we hit closing brace (heuristic: line with only "}")
+                if trimmed == "}" && currentTimestamp != nil && currentEvent != nil && currentSessionId != nil {
+                    if sessions[currentSessionId!] == nil {
+                        sessions[currentSessionId!] = SessionTimeline(sessionId: currentSessionId!, events: [])
+                    }
+
+                    sessions[currentSessionId!]?.events.append(StateEvent(
+                        timestamp: currentTimestamp!,
+                        eventType: currentEvent!,
+                        eventData: [:]
+                    ))
+
+                    // Reset for next event
+                    currentTimestamp = nil
+                    currentEvent = nil
+                    currentSessionId = nil
+                }
+            }
+        }
+
+        // Calculate concurrency timeline
+        let concurrencyTimeline = calculateConcurrency(sessions: sessions)
+
+        return ProductivityStats(sessions: sessions, concurrencyTimeline: concurrencyTimeline)
+    }
+
+    func calculateConcurrency(sessions: [String: SessionTimeline]) -> [ConcurrencyPeriod] {
+        var stateChanges: [(Date, String, SessionStatus)] = []
+
+        // Collect all state changes
+        for (sessionId, timeline) in sessions {
+            var currentStatus: SessionStatus = .waiting
+            for event in timeline.events.sorted(by: { $0.timestamp < $1.timestamp }) {
+                let newStatus: SessionStatus
+                switch event.eventType {
+                case "SessionStart":
+                    newStatus = .waiting
+                case "UserPromptSubmit":
+                    newStatus = .working
+                case "Stop":
+                    if event.eventData["event"] as? String != "SubagentStop" {
+                        newStatus = .waiting
+                    } else {
+                        newStatus = currentStatus
+                    }
+                case "SessionEnd":
+                    newStatus = .ended
+                default:
+                    newStatus = currentStatus
+                }
+
+                if newStatus != currentStatus {
+                    stateChanges.append((event.timestamp, sessionId, newStatus))
+                    currentStatus = newStatus
+                }
+            }
+        }
+
+        stateChanges.sort { $0.0 < $1.0 }
+
+        // Calculate concurrency over time
+        var periods: [ConcurrencyPeriod] = []
+        var sessionStates: [String: SessionStatus] = [:]
+        var lastTimestamp: Date?
+
+        for (timestamp, sessionId, newStatus) in stateChanges {
+            if let last = lastTimestamp, last < timestamp {
+                let workingCount = sessionStates.values.filter { $0 == .working }.count
+                if let lastPeriod = periods.last, lastPeriod.concurrency == workingCount {
+                    // Extend last period
+                    periods[periods.count - 1].endTime = timestamp
+                } else {
+                    periods.append(ConcurrencyPeriod(startTime: last, endTime: timestamp, concurrency: workingCount))
+                }
+            }
+
+            sessionStates[sessionId] = newStatus
+            if newStatus == .ended {
+                sessionStates.removeValue(forKey: sessionId)
+            }
+            lastTimestamp = timestamp
+        }
+
+        // Add final period if needed
+        if let last = lastTimestamp {
+            let workingCount = sessionStates.values.filter { $0 == .working }.count
+            if let lastPeriod = periods.last, lastPeriod.concurrency == workingCount {
+                periods[periods.count - 1].endTime = Date()
+            } else {
+                periods.append(ConcurrencyPeriod(startTime: last, endTime: Date(), concurrency: workingCount))
+            }
+        }
+
+        return periods
+    }
+
+    func displayProductivityStats(_ stats: ProductivityStats) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AI Productivity Stats - Today"
+        window.center()
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+        scrollView.hasVerticalScroller = true
+        scrollView.autoresizingMask = [.width, .height]
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 580, height: 480))
+        textView.isEditable = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.autoresizingMask = [.width]
+
+        var report = "=== AI PRODUCTIVITY REPORT ===\n"
+        report += "Date: \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .none))\n\n"
+
+        // Session stats
+        report += "📊 SESSION SUMMARY\n"
+        report += "Total sessions today: \(stats.sessions.count)\n\n"
+
+        for (sessionId, timeline) in stats.sessions.sorted(by: { $0.key < $1.key }) {
+            let workingTime = calculateWorkingTime(timeline: timeline)
+            report += "Session: \(sessionId.prefix(8))...\n"
+            report += "  Working time: \(formatDuration(workingTime))\n"
+            report += "  Events: \(timeline.events.count)\n\n"
+        }
+
+        // Concurrency stats
+        report += "\n🚀 CONCURRENCY ANALYSIS\n"
+        let maxConcurrency = stats.concurrencyTimeline.map { $0.concurrency }.max() ?? 0
+        report += "Max concurrent working sessions: \(maxConcurrency)\n\n"
+
+        var concurrencySummary: [Int: TimeInterval] = [:]
+        for period in stats.concurrencyTimeline {
+            let duration = period.endTime.timeIntervalSince(period.startTime)
+            concurrencySummary[period.concurrency, default: 0] += duration
+        }
+
+        for level in concurrencySummary.keys.sorted(by: >) {
+            let duration = concurrencySummary[level]!
+            report += "Concurrency \(level): \(formatDuration(duration))\n"
+        }
+
+        // Find longest max concurrency period
+        if let maxPeriod = stats.concurrencyTimeline.filter({ $0.concurrency == maxConcurrency }).max(by: { $0.duration < $1.duration }) {
+            report += "\nLongest max concurrency period:\n"
+            report += "  From \(formatTime(maxPeriod.startTime)) to \(formatTime(maxPeriod.endTime))\n"
+            report += "  Duration: \(formatDuration(maxPeriod.duration))\n"
+        }
+
+        // AI utilization
+        let totalTime = stats.concurrencyTimeline.reduce(0.0) { $0 + $1.duration }
+        let idleTime = concurrencySummary[0] ?? 0
+        if totalTime > 0 {
+            let utilization = ((totalTime - idleTime) / totalTime) * 100
+            report += "\n📈 AI UTILIZATION: \(String(format: "%.1f%%", utilization))\n"
+        }
+
+        textView.string = report
+        scrollView.documentView = textView
+        window.contentView = scrollView
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func calculateWorkingTime(timeline: SessionTimeline) -> TimeInterval {
+        var totalWorking: TimeInterval = 0
+        var currentStatus: SessionStatus = .waiting
+        var statusStartTime: Date?
+
+        for event in timeline.events.sorted(by: { $0.timestamp < $1.timestamp }) {
+            let newStatus: SessionStatus
+            switch event.eventType {
+            case "UserPromptSubmit":
+                newStatus = .working
+            case "Stop":
+                newStatus = .waiting
+            default:
+                newStatus = currentStatus
+            }
+
+            if newStatus != currentStatus {
+                if let startTime = statusStartTime, currentStatus == .working {
+                    totalWorking += event.timestamp.timeIntervalSince(startTime)
+                }
+                currentStatus = newStatus
+                statusStartTime = event.timestamp
+            }
+        }
+
+        // Add current period if still working
+        if currentStatus == .working, let startTime = statusStartTime {
+            totalWorking += Date().timeIntervalSince(startTime)
+        }
+
+        return totalWorking
+    }
+
+    func formatDuration(_ seconds: TimeInterval) -> String {
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m"
+        }
+    }
+
+    func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+// MARK: - Productivity Stats Data Structures
+
+struct StateEvent {
+    var timestamp: Date
+    var eventType: String
+    var eventData: [String: Any]
+}
+
+struct SessionTimeline {
+    var sessionId: String
+    var events: [StateEvent]
+}
+
+struct ConcurrencyPeriod {
+    var startTime: Date
+    var endTime: Date
+    var concurrency: Int
+
+    var duration: TimeInterval {
+        endTime.timeIntervalSince(startTime)
+    }
+}
+
+struct ProductivityStats {
+    var sessions: [String: SessionTimeline]
+    var concurrencyTimeline: [ConcurrencyPeriod]
 }
 
 print("Starting Agent Monitor...")
